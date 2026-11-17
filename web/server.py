@@ -15,7 +15,7 @@
 import importlib.util
 import json
 import os
-import queue
+import secrets
 import subprocess
 import sys
 import threading
@@ -165,6 +165,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Accel-Buffering", "no")   # 앞단 nginx 버퍼링 끄기
         if length is not None:
             self.send_header("Content-Length", str(length))
         self.end_headers()
@@ -199,6 +200,8 @@ class Handler(BaseHTTPRequestHandler):
                 body = f.read()
             self._headers(200, ctype, len(body))
             return self.wfile.write(body)
+        if u.path == "/api/agent-run":
+            return self._agent_poll({k: v[0] for k, v in parse_qs(u.query).items()})
         if u.path == "/api/status":
             return self._json(200, {"key_registered": bool(mcp.API_KEY), "agent_available": True, "agent_busy": AGENT_LOCK.locked(),
                                     "today": time.strftime("%Y-%m-%d")})
@@ -236,6 +239,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(404, {"error": "없는 경로"})
 
     def _agent_run(self, body):
+        """작업을 시작하고 ID만 즉시 돌려준다. 진행 상황은 GET /api/agent-run?job=&since= 로 짧게 폴링한다.
+        (긴 SSE 하나를 열어 두면 앞단 프록시 버퍼링·CloudFront 30초 응답 대기 제한에 걸려 끊긴다)"""
         profile, sigungu = body.get("profile"), body.get("sigungu")
         code, judged = run_eligibility(profile)          # 같은 검증을 먼저 통과해야 실행
         if code != 200:
@@ -244,49 +249,66 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "구 이름이 올바르지 않습니다"})
         if not AGENT_LOCK.acquire(blocking=False):
             return self._json(409, {"error": "다른 에이전트 실행이 진행 중입니다. 끝난 뒤 다시 실행하세요."})
-        try:
-            self._headers(200, "text/event-stream; charset=utf-8")
-            cmd = ["claude", "-p", agent_prompt(profile, sigungu),
-                   "--allowedTools", "Skill,Agent,Task,Bash(python3:*),Read,Grep,Glob,WebFetch,"
-                                     "mcp__applyhome__search_notices,mcp__applyhome__get_notice_models",
-                   "--output-format", "stream-json", "--verbose"]
-            env = {k: v for k, v in os.environ.items() if k != "APPLYHOME_API_KEY"}
-            p = subprocess.Popen(cmd, cwd=WORKSPACE, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                 text=True, env=env)
-            start = time.time()
-            self._sse({"kind": "start", "label": "에이전트 실행 시작"})
-            # 출력은 별도 스레드로 읽고, 조용한 동안에는 10초마다 하트비트를 보낸다
-            # (CloudFront 오리진 읽기 30초·ALB 유휴 60초 제한에 걸려 연결이 끊기지 않도록)
-            lines = queue.Queue()
-            threading.Thread(target=lambda: ([lines.put(l) for l in p.stdout], lines.put(None)), daemon=True).start()
-            while True:
-                if time.time() - start > AGENT_TIMEOUT:
-                    p.kill()
-                    self._sse({"kind": "blocked", "label": "시간 초과로 중단했습니다"})
-                    break
-                try:
-                    line = lines.get(timeout=10)
-                except queue.Empty:
-                    self.wfile.write(b": ping\n\n"); self.wfile.flush()
-                    continue
-                if line is None:
-                    break
-                try:
-                    ev = json.loads(line)
-                except ValueError:
-                    continue
-                for step in summarize_event(ev):
-                    self._sse(step)
-            p.wait(timeout=10)
-            self._sse({"kind": "end", "label": f"종료 코드 {p.returncode}"})
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            AGENT_LOCK.release()
+        job_id = secrets.token_urlsafe(16)
+        JOBS[job_id] = {"events": [], "done": False, "created": time.time()}
+        threading.Thread(target=run_agent_job, args=(job_id, profile, sigungu), daemon=True).start()
+        return self._json(202, {"job": job_id})
 
-    def _sse(self, obj):
-        self.wfile.write(f"data: {json.dumps(obj, ensure_ascii=False)}\n\n".encode("utf-8"))
-        self.wfile.flush()
+    def _agent_poll(self, q):
+        purge_jobs()
+        job = JOBS.get(q.get("job", ""))
+        if not job:
+            return self._json(404, {"error": "작업이 없거나 만료되었습니다(결과는 15분간만 보관)"})
+        try:
+            since = max(0, int(q.get("since", "0")))
+        except ValueError:
+            since = 0
+        return self._json(200, {"events": job["events"][since:], "next": len(job["events"]), "done": job["done"]})
+
+
+JOBS = {}
+JOB_TTL = 15 * 60
+
+
+def purge_jobs():
+    now = time.time()
+    for k in [k for k, j in JOBS.items() if now - j["created"] > JOB_TTL]:
+        JOBS.pop(k, None)
+
+
+def run_agent_job(job_id, profile, sigungu):
+    """claude -p로 플러그인 스킬을 실행하고 단계를 메모리(JOBS)에 쌓는다. 파일·로그에 남기지 않는다."""
+    job = JOBS[job_id]
+    add = job["events"].append
+    try:
+        cmd = ["claude", "-p", agent_prompt(profile, sigungu),
+               "--allowedTools", "Skill,Agent,Task,Bash(python3:*),Read,Grep,Glob,WebFetch,"
+                                 "mcp__applyhome__search_notices,mcp__applyhome__get_notice_models",
+               "--output-format", "stream-json", "--verbose"]
+        env = {k: v for k, v in os.environ.items() if k != "APPLYHOME_API_KEY"}
+        p = subprocess.Popen(cmd, cwd=WORKSPACE, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, env=env)
+        add({"kind": "start", "label": "에이전트 실행 시작"})
+        timer = threading.Timer(AGENT_TIMEOUT, p.kill)
+        timer.start()
+        for line in p.stdout:
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            for step in summarize_event(ev):
+                add(step)
+        p.wait(timeout=30)
+        timed_out = not timer.is_alive() and p.returncode != 0
+        timer.cancel()
+        if timed_out:
+            add({"kind": "blocked", "label": "시간 초과로 중단했습니다"})
+        add({"kind": "end", "label": f"종료 코드 {p.returncode}"})
+    except Exception as e:
+        add({"kind": "blocked", "label": f"실행 오류: {type(e).__name__}"})
+    finally:
+        job["done"] = True
+        AGENT_LOCK.release()
 
 
 def main():

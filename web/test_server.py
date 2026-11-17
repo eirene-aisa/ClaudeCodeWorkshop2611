@@ -44,4 +44,6 @@ check("키 없으면 502 + 안내", (s, "인증키" in json.loads(b)["error"]), 
 check("잘못된 구 이름 400/502", req("GET", "/api/notices?sido=%EC%84%9C%EC%9A%B8&sigungu=a.com")[0] in (400, 502), True)
 check("없는 경로 404", req("GET", "/etc/passwd")[0], 404)
 check("에이전트 실행도 같은 검증", req("POST", "/api/agent-run", {"profile": {"name": "x"}})[0], 400)
+check("없는 작업 조회 404", req("GET", "/api/agent-run?job=nope")[0], 404)
+check("버퍼링 끄기 헤더", req("GET", "/api/status")[1].get("X-Accel-Buffering"), "no")
 print("\n결과:", "OK" if not fails else f"{fails} FAIL"); sys.exit(1 if fails else 0)

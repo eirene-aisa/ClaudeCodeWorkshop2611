@@ -404,24 +404,24 @@ async function runAgent() {
   btn.disabled = true; log.replaceChildren(); ans.hidden = true;
   const add = (kind, text, detail) => { const li = el("li", { class: "k-" + kind }, text); if (detail) li.append(" ", el("code", { text: detail })); log.append(li); };
   const LABEL = { "applyhome-kit:eligibility-checker": "판정 에이전트", "applyhome-kit:notice-finder": "공고 탐색 에이전트", "applyhome-kit:privacy-reviewer": "개인정보 점검 에이전트" };
+  const show = (s) => {
+    if (s.kind === "agent") add("agent", LABEL[s.label] || s.label);
+    else if (s.kind === "mcp") add("mcp", s.label === "search_notices" ? "공고 조회" : "주택형 조회", JSON.stringify(s.detail));
+    else if (s.kind === "blocked") add("blocked", `차단·오류: ${s.label}`);
+    else if (s.kind === "result") { ans.replaceChildren(mdToNodes(s.text || "")); ans.hidden = false; add("tool", `완료: ${s.turns ?? "-"}턴, 약 $${(s.cost_usd ?? 0).toFixed(2)}, 권한 거부 ${s.denials}건`); }
+    else add("tool", s.label);
+  };
   try {
-    const body = JSON.stringify({ profile: state.profile, sigungu: state.gu || null });
-    const r = await fetch("api/agent-run", { method: "POST", headers: { "Content-Type": "application/json", "x-amz-content-sha256": await bodyHash(body) }, body });
-    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || `요청 실패(${r.status})`); }
-    const reader = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+    // 작업을 시작하고 2초마다 새 단계만 받아 온다(긴 연결을 열어 두지 않아 프록시에서 끊기지 않음)
+    const { job } = await api("api/agent-run", { method: "POST", body: JSON.stringify({ profile: state.profile, sigungu: state.gu || null }) });
+    let since = 0, misses = 0;
     for (;;) {
-      const { value, done } = await reader.read(); if (done) break;
-      buf += dec.decode(value, { stream: true }); let k;
-      while ((k = buf.indexOf("\n\n")) >= 0) {
-        const chunk = buf.slice(0, k); buf = buf.slice(k + 2);
-        if (!chunk.startsWith("data: ")) continue;
-        const s = JSON.parse(chunk.slice(6));
-        if (s.kind === "agent") add("agent", LABEL[s.label] || s.label);
-        else if (s.kind === "mcp") add("mcp", s.label === "search_notices" ? "공고 조회" : "주택형 조회", JSON.stringify(s.detail));
-        else if (s.kind === "blocked") add("blocked", `차단·오류: ${s.label}`);
-        else if (s.kind === "result") { ans.replaceChildren(mdToNodes(s.text || "")); ans.hidden = false; add("tool", `완료: ${s.turns ?? "-"}턴, 약 $${(s.cost_usd ?? 0).toFixed(2)}, 권한 거부 ${s.denials}건`); }
-        else add("tool", s.label);
-      }
+      await new Promise(r => setTimeout(r, 2000));
+      let d;
+      try { d = await api(`api/agent-run?job=${encodeURIComponent(job)}&since=${since}`); misses = 0; }
+      catch (e) { if (++misses >= 5) throw e; continue; }   // 일시적인 네트워크 오류는 다시 시도
+      d.events.forEach(show); since = d.next;
+      if (d.done) break;
     }
   } catch (e) { add("blocked", e.message); }
   finally { btn.disabled = false; }
