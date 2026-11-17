@@ -122,12 +122,16 @@ def find_notices(filters, emit, usage):
 
 def write_answer(judged, findings, region, usage, fixes=None, draft=None):
     skill = prompt_file("SKILL.md")
-    steps = skill[skill.find("## 4."):] if "## 4." in skill else skill
+    # 4단계(맞춰 보기)만 쓴다. 5단계(점검)는 이 파이프라인에서 privacy-reviewer가 따로 맡는다.
+    a, b = skill.find("## 4."), skill.find("## 5.")
+    steps = skill[a:b] if a >= 0 and b > a else skill
     system = ("당신은 청약 자격·공고 확인 결과를 사용자에게 정리해 주는 작성자입니다. 아래 절차의 4~5단계를 따릅니다.\n\n"
               + steps + "\n\n# 작성 규칙\n- 한국어 마크다운. 판정마다 rule_id를 붙입니다.\n"
               "- 소득은 구간으로만 쓰고 금액이나 소수점 %는 쓰지 않습니다.\n"
               "- 링크는 https://www.applyhome.co.kr/ 아래 주소만 씁니다.\n"
-              "- 마지막에 disclaimer 문구를 그대로 붙입니다.")
+              "- 출력 순서: ① 조회 지역·기준일 ② 가능한 공급 유형 요약 ③ 맞는 현재 공고 ④ 확인필요 항목 ⑤ 고지 문구.\n"
+              "- 마지막에 disclaimer 문구를 그대로 붙입니다.\n"
+              "- 개인정보 점검은 다음 단계에서 privacy-reviewer가 따로 합니다. 점검을 했다·못 했다는 말은 쓰지 않습니다.")
     if fixes and draft:
         user = f"아래 초안을 점검 의견에 맞게 고쳐 최종본만 출력하세요.\n\n# 점검 의견\n{fixes}\n\n# 초안\n{draft}"
     else:
