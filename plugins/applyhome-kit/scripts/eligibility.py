@@ -54,9 +54,12 @@ REQUIRED = ["age_band", "residence_sido", "homeless_household", "account_period"
 SCOPES = ["민영", "국민", "공공"]
 
 
+class InputError(ValueError):
+    """입력 검증 실패. 메시지에는 항목 이름만 담고 입력 값은 담지 않는다."""
+
+
 def fail(msg):
-    print(json.dumps({"error": msg}, ensure_ascii=False))
-    sys.exit(1)
+    raise InputError(msg)
 
 
 def _value(v):
@@ -415,15 +418,17 @@ def judge(p, R):
     return res, area_label, pct
 
 
-def main():
+def evaluate(argv):
+    """key=value 인자 목록을 판정해 결과 dict를 돌려준다(Lambda 등에서 import해 쓰는 진입점).
+    입력이 잘못되면 InputError를 던진다."""
     with open(RULES_PATH, encoding="utf-8") as f:
         R = json.load(f)
-    p = load_profile(sys.argv[1:])
+    p = load_profile(argv)
     results, area, pct = judge(p, R)
     possible = [r["type"] for r in results
                 if r.get("status") in ("가능", "확인필요") and r["rule_id"] not in ("SP-INSTITUTION", "REGION", "GEN-SCORE")]
     region = next((r for r in results if r["rule_id"] == "REGION"), None)
-    print(json.dumps({
+    return {
         "as_of": R["as_of"],
         "sources": R["source"],
         "disclaimer": R["disclaimer"],
@@ -434,7 +439,16 @@ def main():
         # notice-finder에 넘길 비개인 필터(개인 조건 원문은 넘기지 않음)
         "notice_filters": {"sido": p["target_sido"], "candidate_types": possible,
                            "region_status": region["status"] if region else None},
-    }, ensure_ascii=False, indent=2))
+    }
+
+
+def main():
+    try:
+        out = evaluate(sys.argv[1:])
+    except InputError as e:
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        sys.exit(1)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

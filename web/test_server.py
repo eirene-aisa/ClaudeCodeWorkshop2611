@@ -29,7 +29,7 @@ check("화면은 상대 경로 사용", (b'href="app.css"' in b, b'src="app.js"'
 check("다른 Host 거부(DNS 리바인딩)", req("GET", "/api/status", host="evil.example")[0], 421)
 s, h, b = req("GET", "/api/status"); st = json.loads(b)
 check("키 없음 표시", st["key_registered"], False)
-check("상태 응답에 키 값 없음", set(st), {"key_registered", "agent_busy", "today"})
+check("상태 응답에 키 값 없음", set(st), {"key_registered", "agent_available", "agent_busy", "today"})
 s, _, b = req("POST", "/api/judge", {"profile": {"age_band": "30-34", "residence_sido": "서울", "homeless_household": True, "account_period": "3y", "monthly_income_manwon": "780", "household_size": "2", "dual_income": True}})
 j = json.loads(b)
 check("판정 200", s, 200)

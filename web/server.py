@@ -200,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
             self._headers(200, ctype, len(body))
             return self.wfile.write(body)
         if u.path == "/api/status":
-            return self._json(200, {"key_registered": bool(mcp.API_KEY), "agent_busy": AGENT_LOCK.locked(),
+            return self._json(200, {"key_registered": bool(mcp.API_KEY), "agent_available": True, "agent_busy": AGENT_LOCK.locked(),
                                     "today": time.strftime("%Y-%m-%d")})
         if u.path in ("/api/notices", "/api/models"):
             q = {k: v[0] for k, v in parse_qs(u.query).items()}

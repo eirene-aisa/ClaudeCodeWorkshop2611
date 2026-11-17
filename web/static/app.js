@@ -85,8 +85,16 @@ const domId = (n) => `n-${n._kind}-${n.HOUSE_MANAGE_NO}`;
 
 const state = { notices: [], models: {}, gu: "", judged: null, profile: null };
 
+// CloudFront OAC가 Lambda 함수 URL로 POST를 서명해 넘기려면 본문 SHA-256 헤더가 필요하다
+async function bodyHash(body) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function api(path, opts = {}) {
-  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const headers = { "Content-Type": "application/json" };
+  if (opts.body) headers["x-amz-content-sha256"] = await bodyHash(opts.body);
+  const r = await fetch(path, { ...opts, headers });
   const data = await r.json().catch(() => ({ error: "응답을 해석할 수 없습니다" }));
   if (!r.ok) throw new Error(data.error || `요청 실패(${r.status})`);
   return data;
@@ -397,7 +405,8 @@ async function runAgent() {
   const add = (kind, text, detail) => { const li = el("li", { class: "k-" + kind }, text); if (detail) li.append(" ", el("code", { text: detail })); log.append(li); };
   const LABEL = { "applyhome-kit:eligibility-checker": "판정 에이전트", "applyhome-kit:notice-finder": "공고 탐색 에이전트", "applyhome-kit:privacy-reviewer": "개인정보 점검 에이전트" };
   try {
-    const r = await fetch("api/agent-run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: state.profile, sigungu: state.gu || null }) });
+    const body = JSON.stringify({ profile: state.profile, sigungu: state.gu || null });
+    const r = await fetch("api/agent-run", { method: "POST", headers: { "Content-Type": "application/json", "x-amz-content-sha256": await bodyHash(body) }, body });
     if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || `요청 실패(${r.status})`); }
     const reader = r.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) {
@@ -445,6 +454,8 @@ async function onJudge(ev) {
 async function loadStatus() {
   try {
     const s = await api("api/status"); const st = $("#status"); st.textContent = "";
+    state.agentAvailable = s.agent_available !== false;
+    $("#agent").hidden = !state.agentAvailable;
     st.append("기준일 ", el("b", { text: s.today }), " · 공고 조회 ", el("b", { text: s.key_registered ? "연결됨" : "인증키 없음(판정만 가능)" }));
   } catch { $("#status").textContent = "서버에 연결할 수 없습니다"; }
 }
