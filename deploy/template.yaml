@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  applyhome 공개 화면: CloudFront + S3(비공개, OAC) + Lambda 함수 URL(IAM 인증, OAC).
+  인증키는 SSM SecureString(스택 밖에서 등록), 요청 본문 미기록, 동시 실행 상한 5.
+
+Parameters:
+  KeyParamName:
+    Type: String
+    Default: /applyhome/api-key
+    Description: 청약홈 분양정보 API 인증키가 든 SSM SecureString 이름(스택 밖에서 등록)
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CloudFrontOnly
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+          - Sid: TLSOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource: [!GetAtt SiteBucket.Arn, !Sub "${SiteBucket.Arn}/*"]
+            Condition: { Bool: { aws:SecureTransport: "false" } }
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/applyhome-public-api
+      RetentionInDays: 1
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: applyhome-public-api
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "${ApiLogGroup.Arn}:*"
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${KeyParamName}"
+              - Effect: Allow
+                Action: kms:Decrypt
+                Resource: "*"
+                Condition:
+                  StringEquals: { kms:ViaService: !Sub "ssm.${AWS::Region}.amazonaws.com" }
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: applyhome-public-api
+      Runtime: python3.12
+      Architectures: [arm64]
+      Handler: handler.handler
+      MemorySize: 256
+      Timeout: 25
+      ReservedConcurrentExecutions: 5
+      Role: !GetAtt ApiRole.Arn
+      LoggingConfig: { LogGroup: !Ref ApiLogGroup, LogFormat: Text }
+      Environment:
+        Variables: { APPLYHOME_KEY_PARAM: !Ref KeyParamName }
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {"statusCode": 503, "body": "deploying"}
+
+  ApiUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      AuthType: AWS_IAM
+
+  ApiUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunctionUrl
+      FunctionUrlAuthType: AWS_IAM
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunction
+      Principal: cloudfront.amazonaws.com
+      SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  SiteOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "applyhome-site-${AWS::StackName}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ApiOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "applyhome-api-${AWS::StackName}"
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ApiCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "applyhome-api-${AWS::StackName}"
+        Comment: 오리진 Cache-Control을 따름(공고 5분, 판정 no-store)
+        MinTTL: 0
+        DefaultTTL: 0
+        MaxTTL: 300
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          HeadersConfig: { HeaderBehavior: none }
+          CookiesConfig: { CookieBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: all }
+
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "applyhome-security-${AWS::StackName}"
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+            Override: true
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true }
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: no-referrer, Override: true }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: applyhome 공개 화면
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            S3OriginConfig: { OriginAccessIdentity: "" }
+            OriginAccessControlId: !GetAtt SiteOac.Id
+          - Id: api
+            DomainName: !Select [2, !Split ["/", !GetAtt ApiUrl.FunctionUrl]]
+            CustomOriginConfig: { OriginProtocolPolicy: https-only, OriginSSLProtocols: [TLSv1.2] }
+            OriginAccessControlId: !GetAtt ApiOac.Id
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6        # Managed-CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
+        CacheBehaviors:
+          - PathPattern: api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, PATCH, POST, DELETE]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            CachePolicyId: !Ref ApiCachePolicy
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+            ResponseHeadersPolicyId: !Ref SecurityHeaders
+
+Outputs:
+  SiteUrl:
+    Value: !Sub "https://${Distribution.DomainName}/"
+  DistributionId:
+    Value: !Ref Distribution
+  BucketName:
+    Value: !Ref SiteBucket
+  FunctionName:
+    Value: !Ref ApiFunction
