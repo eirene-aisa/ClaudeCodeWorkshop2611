@@ -2,7 +2,7 @@
 # 개인정보 가드: 식별 가능한 개인정보 입력을 막고, 입력된 조건이 파일로 저장되거나
 # 다른 곳으로 나가지 않게 한다. (외부 URL 차단은 url-guard.sh가 맡는다)
 GUARD_NAME="PII-GUARD"
-source "$(dirname "$0")/lib-guard.sh"
+source "$(dirname "$0")/lib-guard.sh" || { echo "GUARD: 검사기 오류(공용 스크립트 로드 실패) - 차단" >&2; exit 2; }
 
 # 1) 식별 가능한 개인정보 패턴 (asset-team-kit dlp-guard.sh의 PAT를 확장)
 PII='(^|[^0-9])([0-9]{6}-?[1-8][0-9]{6}|[0-9]{6}-[1-8]([^0-9]|$)'          # 주민·외국인등록번호(앞자리+성별 포함)
@@ -31,12 +31,9 @@ if [ "$TOOL" = "Bash" ]; then
   WRITERS='(^|[^[:alnum:]_.-])(tee|cp|mv|dd|install|ln|touch|truncate|sponge|split|sqlite3|tar|zip|gzip|mkdir|mktemp|perl|ruby|node|awk|sed[[:space:]]+-i)([[:space:]]|$)'
   has_ere "$WRITERS" "$CMD" && block "파일을 쓰거나 만들 수 있는 명령"
 
-  # python은 판정 스크립트를 한 줄 key=value 인자로 실행하는 형태만 허용
-  # (값에 셸 특수문자·따옴표·공백·줄바꿈이 없어야 함 → 다른 명령을 섞을 수 없음)
+  # python은 판정 스크립트를 한 줄 key=value 인자로, 정해진 경로에서 실행하는 형태만 허용
   if has_ere '(^|[^[:alnum:]_.-])python[0-9.]*([[:space:]]|$)' "$CMD"; then
-    has_ere '^python3[[:space:]]+-I[[:space:]]+/[^[:space:];&|`$<>()'"'"'"\\]*/scripts/eligibility\.py([[:space:]]+[a-z_0-9]+=[^[:space:];&|`$<>()'"'"'"\\{}*?]+)*[[:space:]]*$' "$CMD" \
-      || block "python은 'python3 -I <경로>/scripts/eligibility.py key=value ...' 형태만 허용"
-    [ "$(wc -l <<<"$CMD")" -eq 1 ] || block "판정 스크립트 실행은 한 줄이어야 함"
+    is_elig_cmd "$CMD" || block "python은 'python3 -I <플러그인>/scripts/eligibility.py key=value ...' 형태만 허용"
   fi
 fi
 

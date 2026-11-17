@@ -15,7 +15,7 @@ jq -n --arg k "$FAKE" --arg k2 "$FAKE_ENC_SRC" \
   '{projects: {"/x": {mcpServers: {applyhome: {type:"stdio", command:"python3", env:{APPLYHOME_API_KEY:$k}}}}},
     mcpServers: {other: {env:{TOKEN:$k2, SHORT:"1"}}}}' > "$HOME/.claude.json"
 ln -s "$HOME/.claude.json" "$T/ws/innocent.txt"
-ELIG="/opt/x/applyhome-kit/scripts/eligibility.py"
+ELIG="$(realpath -e "$S/eligibility.py")"
 
 PASS=0; FAIL=0
 run() {  # run <기대코드> <스크립트> <설명> <JSON>   (RUNENV로 env 접두 지정 가능)
@@ -67,18 +67,27 @@ run 2 key-guard.sh "git 명령 치환"               "$(bashc 'git commit -m "$(
 run 2 key-guard.sh "git -c 설정 주입"            "$(bashc 'git -c core.pager=sh log')"
 run 2 key-guard.sh "여러 줄 명령"                "$(bashc "git status
 cat x")"
-run 0 key-guard.sh "git status 허용"             "$(bashc 'git status')"
-run 0 key-guard.sh "git log 허용"                "$(bashc 'git log --oneline -5')"
+run 2 key-guard.sh "git 명령도 허용 목록 밖"     "$(bashc 'git status')"
+run 2 key-guard.sh "git commit도 허용 목록 밖"   "$(bashc 'git commit -m docs')"
+run 2 key-guard.sh "다른 위치의 같은 이름 스크립트" "$(bashc 'python3 -I /tmp/x/scripts/eligibility.py age_band=30-34')"
+run 2 key-guard.sh "상위 경로(..) 우회"          "$(bashc "python3 -I $S/../scripts/eligibility.py age_band=30-34")"
+run 2 key-guard.sh "상대 경로 실행"              "$(bashc 'python3 -I scripts/eligibility.py age_band=30-34')"
+run 2 key-guard.sh "-I 없는 실행"                "$(bashc "python3 $ELIG age_band=30-34")"
 
-echo "== key-guard: 커밋 검사"
-G="$T/repo"; mkdir -p "$G"; git -C "$G" init -q
+echo "== commit-guard (저장소 git 훅: pre-commit·commit-msg)"
+G="$T/repo"; mkdir -p "$G"; git -C "$G" init -q; git -C "$G" config user.email t@t; git -C "$G" config user.name t
+for h in pre-commit commit-msg; do printf '#!/bin/bash\nexec bash "%s/commit-guard.sh" "$@"\n' "$S" > "$G/.git/hooks/$h"; chmod +x "$G/.git/hooks/$h"; done
+gcommit() { (cd "$G" && git commit -q -m "$1" >/dev/null 2>"$T/err"); echo $?; }
 printf 'key = "%s"\n' "$FAKE" > "$G/conf.py"; git -C "$G" add conf.py
-gc() { jq -cn --arg c "$1" --arg d "$G" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$c},cwd:$d}'; }
-run 2 key-guard.sh "스테이징된 변경에 키"       "$(gc 'git commit -m "add config"')"
-git -C "$G" rm -q --cached conf.py; rm "$G/conf.py"; echo 'ok' > "$G/readme.md"; git -C "$G" add readme.md
-run 2 key-guard.sh "커밋 메시지에 키"           "$(gc "git commit -m 'key $FAKE'")"
-run 0 key-guard.sh "깨끗한 커밋 통과"           "$(gc 'git commit -m "docs"')"
-run 2 key-guard.sh "git 저장소 아님 → 차단"     "$(jq -cn --arg d "$T/ws" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:"git commit -m x"},cwd:$d}')"
+chk() { if [ "$2" = "$3" ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "FAIL [commit-guard] $1: want $3 got $2 ($(head -c 200 "$T/err"))"; fi; }
+chk "스테이징된 변경에 등록 키 → 커밋 실패" "$(gcommit 'add config')" 1
+git -C "$G" rm -q --cached conf.py; rm "$G/conf.py"; echo ok > "$G/readme.md"; git -C "$G" add readme.md
+chk "커밋 메시지에 등록 키 → 커밋 실패" "$(gcommit "key $FAKE")" 1
+chk "커밋 메시지에 키 형태(serviceKey) → 실패" "$(gcommit "url ?${SKN}=QWERTYUIOPASDFGHJKLzxcvbnm123")" 1
+chk "깨끗한 커밋 → 성공" "$(gcommit 'docs')" 0
+(cd "$T/ws" && bash "$S/commit-guard.sh" >/dev/null 2>&1); chk "git 저장소 밖 실행 → 차단(2)" "$?" 2
+mkdir -p "$T/nojq-early"; for b in bash cat realpath dirname; do ln -s "$(command -v $b)" "$T/nojq-early/$b"; done
+echo 'x' > "$T/msg"; (cd "$G" && env PATH="$T/nojq-early" bash "$S/commit-guard.sh" "$T/msg" >/dev/null 2>&1); chk "jq·grep 없음 → 차단(2)" "$?" 2
 
 echo "== url-guard"
 run 0 url-guard.sh "지정 URL 허용"             "$(pre WebFetch '{"url":"https://www.applyhome.co.kr/ai/aia/selectAPTLttotPblancListView.do","prompt":"목록"}')"
@@ -145,6 +154,11 @@ for g in key-guard.sh url-guard.sh pii-guard.sh; do
   run 2 $g "깨진 JSON 입력"  '{"hook_event_name": "PreToolUse", tool_name'
   run 2 $g "빈 입력"         ''
   run 2 $g "JSON 배열 입력"  '[1,2]'
+done
+mkdir -p "$T/lonely"; for g in key-guard.sh url-guard.sh pii-guard.sh; do cp "$S/$g" "$T/lonely/"; done
+for g in key-guard.sh url-guard.sh pii-guard.sh; do
+  bash "$T/lonely/$g" <<<"$OK_JSON" >/dev/null 2>&1; got=$?
+  if [ "$got" = 2 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); echo "FAIL [$g] 공용 스크립트 없음: want 2 got $got"; fi
 done
 echo '{ broken' > "$HOME/.claude.json"
 run 2 key-guard.sh "깨진 ~/.claude.json"       "$OK_JSON"

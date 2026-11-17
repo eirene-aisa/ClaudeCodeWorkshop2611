@@ -3,7 +3,7 @@
 # 공고 API(api.odcloud.kr)는 applyhome MCP 서버 코드 안에만 고정되어 있고,
 # 모델이 직접 호출하는 것(curl 등)은 막는다.
 GUARD_NAME="URL-GUARD"
-source "$(dirname "$0")/lib-guard.sh"
+source "$(dirname "$0")/lib-guard.sh" || { echo "GUARD: 검사기 오류(공용 스크립트 로드 실패) - 차단" >&2; exit 2; }
 
 ALLOWED_HOST='^(www\.)?applyhome\.co\.kr$'
 OWN_MCP='^mcp__applyhome__'

@@ -87,8 +87,17 @@ class ToolError(Exception):
     pass
 
 
+# 웹 화면 서버처럼 이 모듈을 import해서 쓰는 쪽은 키를 환경변수 대신 이 변수에 넣는다
+# (환경변수는 /proc/<pid>/environ으로 같은 사용자에게 보이므로).
+API_KEY = None
+
+
+def _raw_key():
+    return (API_KEY or os.environ.get("APPLYHOME_API_KEY", "")).strip()
+
+
 def _key():
-    k = os.environ.get("APPLYHOME_API_KEY", "").strip()
+    k = _raw_key()
     if not k:
         raise ToolError("인증키가 등록되지 않았습니다. Claude 세션 밖 터미널에서 "
                         "'claude mcp add --scope local applyhome --env APPLYHOME_API_KEY=... -- python3 <이 파일>' 로 등록하세요.")
@@ -96,7 +105,7 @@ def _key():
 
 
 def _mask(text):
-    k = os.environ.get("APPLYHOME_API_KEY", "").strip()
+    k = _raw_key()
     if not k:
         return text
     for form in {k, urllib.parse.quote(k, safe=""), urllib.parse.unquote(k),
