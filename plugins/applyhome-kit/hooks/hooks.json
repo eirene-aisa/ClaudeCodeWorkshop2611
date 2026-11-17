@@ -1,0 +1,19 @@
+{
+  "description": "applyhome-kit 가드: API 키 유출, 허용 외 URL 접근, 개인정보 입력·저장·전송을 막는다. exit 2 = 차단(오류 경로 포함 fail-closed).",
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/key-guard.sh\"" },
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/pii-guard.sh\"" }
+      ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/key-guard.sh\"" },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/url-guard.sh\"" },
+          { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/pii-guard.sh\"" }
+        ] }
+    ]
+  }
+}

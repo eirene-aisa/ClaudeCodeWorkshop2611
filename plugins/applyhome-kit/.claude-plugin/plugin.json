@@ -1,0 +1,8 @@
+{
+  "name": "applyhome-kit",
+  "version": "0.1.0",
+  "description": "청약 자격 판정·청약홈 공고 확인 킷: 에이전트 3종, check-eligibility 스킬, 키·URL·개인정보 가드 훅",
+  "author": {
+    "name": "Workshop Participant"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "applyhome-local",
+  "owner": { "name": "Workshop Participant" },
+  "plugins": [
+    { "name": "applyhome-kit", "source": "./plugins/applyhome-kit", "description": "청약 자격 판정과 청약홈 공고 확인 킷" }
+  ]
+}

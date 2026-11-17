@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(~/.claude.json)",
+      "Read(~/.claude.json.*)",
+      "Edit(~/.claude.json)",
+      "WebSearch"
+    ]
+  },
+  "enabledPlugins": {
+    "applyhome-kit@applyhome-local": true,
+    "remember@claude-plugins-official": false
+  }
+}
