@@ -407,7 +407,8 @@ async function runAgent() {
   const show = (s) => {
     if (s.kind === "agent") add("agent", LABEL[s.label] || s.label);
     else if (s.kind === "mcp") add("mcp", s.label === "search_notices" ? "공고 조회" : "주택형 조회", JSON.stringify(s.detail));
-    else if (s.kind === "blocked") add("blocked", `차단·오류: ${s.label}`);
+    else if (s.kind === "blocked") add("blocked", `오류: ${s.label}`);
+    else if (s.kind === "guard") add("guard", `가드가 막음(정상 동작): ${s.label}`);
     else if (s.kind === "result") { ans.replaceChildren(mdToNodes(s.text || "")); ans.hidden = false; add("tool", `완료: ${s.turns ?? "-"}턴, 약 $${(s.cost_usd ?? 0).toFixed(2)}, 권한 거부 ${s.denials}건`); }
     else add("tool", s.label);
   };
@@ -456,6 +457,11 @@ async function loadStatus() {
     const s = await api("api/status"); const st = $("#status"); st.textContent = "";
     state.agentAvailable = s.agent_available !== false;
     $("#agent").hidden = !state.agentAvailable;
+    if (s.agent_engine) {   // 공개판: Bedrock Claude로 실행, 하루 실행 상한 표시
+      const left = s.agent_runs_left_today;
+      $("#agent-hint").textContent = `플러그인의 공고 탐색·개인정보 점검 에이전트 정의로 ${s.agent_engine}가 같은 조건을 다시 확인하고, 점검을 거친 답변을 보여 줍니다. 1~2분 걸리며, 공개판은 하루 실행 횟수가 정해져 있습니다` + (left != null ? ` (오늘 남은 횟수 ${left}회).` : ".");
+      if (left === 0) $("#btn-agent").disabled = true;
+    }
     st.append("기준일 ", el("b", { text: s.today }), " · 공고 조회 ", el("b", { text: s.key_registered ? "연결됨" : "인증키 없음(판정만 가능)" }));
   } catch { $("#status").textContent = "서버에 연결할 수 없습니다"; }
 }

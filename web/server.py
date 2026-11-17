@@ -15,6 +15,7 @@
 import importlib.util
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -129,7 +130,12 @@ def summarize_event(ev):
             if c.get("type") == "tool_result" and c.get("is_error"):
                 text = c.get("content")
                 text = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
-                out.append({"kind": "blocked", "label": mcp._mask(text)[:240]})
+                masked = mcp._mask(text)
+                m = re.search(r"(KEY|URL|PII)-GUARD: ([^\n\"]+?) - 차단", masked)
+                if m:   # 가드 훅이 막은 것: 오류가 아니라 의도된 동작
+                    out.append({"kind": "guard", "label": f"{m.group(1)}-GUARD: {m.group(2)}"[:200]})
+                else:
+                    out.append({"kind": "blocked", "label": masked[:240]})
         return out
     if t == "result":
         return [{"kind": "result", "text": mcp._mask(ev.get("result") or ""),

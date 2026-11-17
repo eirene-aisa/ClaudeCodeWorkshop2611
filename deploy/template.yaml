@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   applyhome 공개 화면: CloudFront + S3(비공개, OAC) + Lambda 함수 URL(IAM 인증, OAC).
-  인증키는 SSM SecureString(스택 밖에서 등록), 요청 본문 미기록, 동시 실행 상한 5.
+  인증키는 SSM SecureString(스택 밖에서 등록), 요청 본문 미기록, 동시 실행 상한 10.
+  에이전트: Bedrock Claude(Sonnet·Haiku 5.5), 작업 결과는 DynamoDB 15분 TTL, 하루·IP별 실행 상한.
 
 Parameters:
   KeyParamName:
@@ -9,7 +10,31 @@ Parameters:
     Default: /applyhome/api-key
     Description: 청약홈 분양정보 API 인증키가 든 SSM SecureString 이름(스택 밖에서 등록)
 
+  DailyCap:
+    Type: Number
+    Default: 30
+    Description: 공개판 에이전트 하루 전체 실행 상한
+  IpCap:
+    Type: Number
+    Default: 3
+    Description: 같은 접속 IP(해시)의 하루 실행 상한
+  AgentModel:
+    Type: String
+    Default: us.anthropic.claude-sonnet-5-5
+  ReviewModel:
+    Type: String
+    Default: us.anthropic.claude-haiku-5-5
+
 Resources:
+  AgentTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{ AttributeName: pk, AttributeType: S }]
+      KeySchema: [{ AttributeName: pk, KeyType: HASH }]
+      TimeToLiveSpecification: { AttributeName: ttl, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
   SiteBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -73,6 +98,19 @@ Resources:
                 Action: ssm:GetParameter
                 Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${KeyParamName}"
               - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+                Resource: !GetAtt AgentTable.Arn
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:applyhome-public-api"
+              - Effect: Allow
+                Action: bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${AgentModel}"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${ReviewModel}"
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5*"
+                  - "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-5-5*"
+              - Effect: Allow
                 Action: kms:Decrypt
                 Resource: "*"
                 Condition:
@@ -85,17 +123,31 @@ Resources:
       Runtime: python3.12
       Architectures: [arm64]
       Handler: handler.handler
-      MemorySize: 256
-      Timeout: 25
-      ReservedConcurrentExecutions: 5
+      MemorySize: 512
+      Timeout: 180
+      ReservedConcurrentExecutions: 10
       Role: !GetAtt ApiRole.Arn
       LoggingConfig: { LogGroup: !Ref ApiLogGroup, LogFormat: Text }
       Environment:
-        Variables: { APPLYHOME_KEY_PARAM: !Ref KeyParamName }
+        Variables:
+          APPLYHOME_KEY_PARAM: !Ref KeyParamName
+          AGENT_TABLE: !Ref AgentTable
+          DAILY_CAP: !Ref DailyCap
+          IP_CAP: !Ref IpCap
+          AGENT_MODEL: !Ref AgentModel
+          REVIEW_MODEL: !Ref ReviewModel
       Code:
         ZipFile: |
           def handler(event, context):
               return {"statusCode": 503, "body": "deploying"}
+
+  ApiAsyncConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Qualifier: $LATEST
+      MaximumRetryAttempts: 0          # 에이전트 작업 실패 시 자동 재시도로 두 번 과금되지 않게
+      MaximumEventAgeInSeconds: 300
 
   ApiUrl:
     Type: AWS::Lambda::Url

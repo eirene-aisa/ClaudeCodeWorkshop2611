@@ -145,6 +145,8 @@ table.models th:first-child, table.models td:first-child { text-align: left; }
 .agent-log li.k-agent { font-weight: 700; }
 .agent-log li.k-blocked { color: var(--seal); }
 .agent-log li.k-blocked::before { background: var(--seal); }
+.agent-log li.k-guard { color: var(--ochre); }
+.agent-log li.k-guard::before { background: var(--ochre); }
 .agent-log code { font-size: .8rem; background: #E2E7DF; padding: 1px 4px; border-radius: 2px; }
 .agent-answer { background: var(--sheet); border: 1px solid var(--rule); border-radius: 4px; padding: 16px 22px; }
 .agent-answer h2, .agent-answer h3, .agent-answer h4 { font-family: var(--serif); line-height: 1.3; }
